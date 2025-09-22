@@ -4,6 +4,7 @@ Make great images without prompt gymnastics. Give it a goal and (ideally) a refe
 
 - Model: `gemini-2.5-flash-image-preview`
 - Max 6 smart iterations
+- Strict evaluation: face fidelity, anatomy (fingers/toes/limbs counts), consistency
 - Saves results to `current/`
 
 ## Quick run (copy‑paste)

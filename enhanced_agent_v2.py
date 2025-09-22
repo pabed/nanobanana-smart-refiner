@@ -100,25 +100,106 @@ class EnhancedImageAgentV2:
             print("ℹ️ Tip: Provide a reference image; this model is optimized for image-to-image.")
         return None
 
-    def evaluate_image(self, image: Image.Image, original_prompt: str, iteration: int = 1) -> dict:
+    def evaluate_image(self, image: Image.Image, original_prompt: str, iteration: int = 1, reference_image: Image.Image = None) -> dict:
         try:
-            eval_prompt = f"""
-            Evaluate this generated image against the request: "{original_prompt}"
-            Rate 1-10: ACCURACY, QUALITY, SATISFACTION. Return lines:
-            ACCURACY: X/10\nQUALITY: X/10\nSATISFACTION: X/10\nOVERALL: X.X/10
-            """
-            response = self.model.generate_content(contents=[eval_prompt, image])
+            if reference_image is not None:
+                eval_prompt = f"""
+                You are an extremely strict visual QA evaluator. Assess the FIRST image (Generated) and compare it to the SECOND image (Reference) where applicable.
+
+                Goal: "{original_prompt}"
+
+                Evaluate with 1-10 scores (10 is perfect):
+                - FACE_FIDELITY: If a human face is visible, how closely does identity/likeness match the reference (same person, features, proportions)? If no face or not applicable, use 10.
+                - ANATOMY: Human anatomy correctness. Explicitly check: number of hands (2), arms (2), legs (2), feet (2), eyes (2), facial symmetry; count fingers per visible hand (5 each, unless occluded), toes per visible foot (5). Penalize extra/missing/merged digits, warped limbs, or distortions.
+                - CONSISTENCY: Consistency of key attributes (clothing, hair color/length, accessories) vs reference when they should remain.
+                - ACCURACY: How well it fulfills the goal prompt changes.
+                - QUALITY: Technical quality (clarity, composition, lighting, artifacts).
+                - SATISFACTION: Overall end-user satisfaction.
+
+                Return ONLY these lines in this exact order:
+                FACE_FIDELITY: X/10
+                ANATOMY: X/10
+                CONSISTENCY: X/10
+                ACCURACY: X/10
+                QUALITY: X/10
+                SATISFACTION: X/10
+                NOTES: <one short sentence about any issues found>
+                """
+                contents = [eval_prompt, image, reference_image]
+            else:
+                eval_prompt = f"""
+                You are an extremely strict visual QA evaluator. Assess the image.
+
+                Goal: "{original_prompt}"
+
+                Evaluate with 1-10 scores (10 is perfect):
+                - FACE_FIDELITY: If a human face is visible, ensure identity consistency across the image and natural facial proportions. If not applicable, use 10.
+                - ANATOMY: Human anatomy correctness. Explicitly check: number of hands (2), arms (2), legs (2), feet (2), eyes (2); count fingers per visible hand (5), toes per visible foot (5). Penalize extra/missing/merged digits, warped limbs, or distortions.
+                - CONSISTENCY: Internal consistency (no duplicated limbs, no morphing items).
+                - ACCURACY: How well it fulfills the goal prompt.
+                - QUALITY: Technical quality (clarity, composition, lighting, artifacts).
+                - SATISFACTION: Overall end-user satisfaction.
+
+                Return ONLY these lines in this exact order:
+                FACE_FIDELITY: X/10
+                ANATOMY: X/10
+                CONSISTENCY: X/10
+                ACCURACY: X/10
+                QUALITY: X/10
+                SATISFACTION: X/10
+                NOTES: <one short sentence about any issues found>
+                """
+                contents = [eval_prompt, image]
+
+            response = self.model.generate_content(contents=contents)
             eval_text = response.candidates[0].content.parts[0].text
+
+            # Parse scores
+            keys = ['FACE_FIDELITY','ANATOMY','CONSISTENCY','ACCURACY','QUALITY','SATISFACTION']
             scores = {}
-            for key in ['ACCURACY','QUALITY','SATISFACTION','OVERALL']:
-                m = re.search(rf'{key}:\s*(\d+(?:\.\d+)?)', eval_text)
-                scores[key.lower()] = float(m.group(1)) if m else 5.0
-            scores['feedback'] = eval_text
+            for key in keys:
+                m = re.search(rf'{key}:\s*(\d+(?:\.\d+)?)', eval_text, re.IGNORECASE)
+                scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and reference_image is None else 5.0)
+
+            # Weighted overall (prioritize fidelity + anatomy)
+            w = {
+                'face_fidelity': 0.35,
+                'anatomy': 0.35,
+                'consistency': 0.05,
+                'accuracy': 0.15,
+                'quality': 0.07,
+                'satisfaction': 0.03,
+            }
+            weighted_overall = (
+                scores['face_fidelity'] * w['face_fidelity'] +
+                scores['anatomy'] * w['anatomy'] +
+                scores['consistency'] * w['consistency'] +
+                scores['accuracy'] * w['accuracy'] +
+                scores['quality'] * w['quality'] +
+                scores['satisfaction'] * w['satisfaction']
+            )
+
+            # Extract brief notes
+            m_notes = re.search(r'NOTES:\s*(.+)', eval_text, re.IGNORECASE)
+            notes = m_notes.group(1).strip() if m_notes else ''
+
+            scores['overall'] = round(weighted_overall, 2)
+            scores['feedback'] = notes or eval_text
             scores['iteration'] = iteration
             return scores
         except Exception as e:
             print(f"⚠️ Evaluation error: {e}")
-            return {'accuracy':5,'quality':5,'satisfaction':5,'overall':5,'feedback':str(e),'iteration':iteration}
+            return {
+                'face_fidelity': 10.0 if reference_image is None else 5.0,
+                'anatomy': 5.0,
+                'consistency': 5.0,
+                'accuracy': 5.0,
+                'quality': 5.0,
+                'satisfaction': 5.0,
+                'overall': 5.0,
+                'feedback': str(e),
+                'iteration': iteration
+            }
 
     def improve_prompt(self, current_prompt: str, evaluation: dict, original_goal: str) -> str:
         try:
@@ -158,10 +239,16 @@ class EnhancedImageAgentV2:
             out_path = f"current/iteration_{i}_{self.session_id}.png"
             save_pil_image(gen_img, out_path)
             print("🔍 Evaluating image...")
-            scores = self.evaluate_image(gen_img, goal, i)
-            overall = scores.get('overall', (scores['accuracy']+scores['quality']+scores['satisfaction'])/3)
-            print(f"📊 Scores - Accuracy: {scores['accuracy']}/10, Quality: {scores['quality']}/10, Satisfaction: {scores['satisfaction']}/10")
-            print(f"🎯 Overall Score: {overall:.1f}/10")
+            scores = self.evaluate_image(gen_img, goal, i, ref_img)
+            overall = scores.get('overall', 5.0)
+            print(
+                "📊 Scores - Face: {face}/10, Anatomy: {anat}/10, Consistency: {cons}/10, Accuracy: {acc}/10, Quality: {qual}/10, Satisfaction: {sat}/10".format(
+                    face=scores.get('face_fidelity', 0), anat=scores.get('anatomy', 0), cons=scores.get('consistency', 0),
+                    acc=scores.get('accuracy', 0), qual=scores.get('quality', 0), sat=scores.get('satisfaction', 0)
+                )
+            )
+            print(f"🧠 Notes: {scores.get('feedback','').strip()[:180]}")
+            print(f"🎯 Overall (weighted): {overall:.1f}/10")
             if overall > best_score:
                 best_score = overall
                 best_iter = i
