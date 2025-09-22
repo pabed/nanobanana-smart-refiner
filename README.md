@@ -28,7 +28,13 @@ The system works in **3 modes** depending on your input:
 
 1. **Image + Prompt**: Refine existing image with your instructions *(recommended)*
 2. **Text-only**: Generate from scratch with just a prompt
-3. **Smart Iteration**: Automatically improves prompts based on evaluation feedback images without prompt gymnastics. Give it a goal and (ideally) a reference image — it iterates, self-evaluates, tweaks the prompt, and saves the best shots. Easy.
+3. **Smart Iteration**: Automatically improves prompts based on evaluation feedback images without prompt gymnastics. # nanobanana-smart-refiner
+
+<p align="center">
+  <img src="BANANA.png" alt="Smart Image Refiner Demo" width="300"/>
+</p>
+
+Make great images without prompt gymnastics. Give it a goal and (ideally) a reference image — it iterates, self-evaluates, tweaks the prompt, and saves the best shots. Easy.
 
 - Model: `gemini-2.5-flash-image-preview`
 - Max 6 smart iterations
