@@ -42,7 +42,7 @@ class EnhancedImageAgentV2:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
         self.max_iterations = max_iterations
-        self.target_score = 8.0
+        self.target_score = 8.5  # Raised approval threshold
         self.session_id = f"{int(time.time())}_{random.randint(10000, 99999)}"
         os.makedirs("current", exist_ok=True)
 
@@ -161,6 +161,20 @@ class EnhancedImageAgentV2:
                 m = re.search(rf'{key}:\s*(\d+(?:\.\d+)?)', eval_text, re.IGNORECASE)
                 scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and reference_image is None else 5.0)
 
+            # Apply minimum thresholds
+            min_thresholds = {
+                'accuracy': 8.5,
+                'quality': 8.0,
+                'satisfaction': 8.0
+            }
+            
+            # Check if key criteria meet minimums
+            meets_minimums = True
+            for metric, min_val in min_thresholds.items():
+                if scores.get(metric, 0) < min_val:
+                    meets_minimums = False
+                    break
+
             # Weighted overall (prioritize fidelity + anatomy)
             w = {
                 'face_fidelity': 0.35,
@@ -178,6 +192,10 @@ class EnhancedImageAgentV2:
                 scores['quality'] * w['quality'] +
                 scores['satisfaction'] * w['satisfaction']
             )
+            
+            # If minimum thresholds not met, cap overall at 8.4 (below approval)
+            if not meets_minimums:
+                weighted_overall = min(weighted_overall, 8.4)
 
             # Extract brief notes
             m_notes = re.search(r'NOTES:\s*(.+)', eval_text, re.IGNORECASE)
@@ -249,13 +267,28 @@ class EnhancedImageAgentV2:
             )
             print(f"🧠 Notes: {scores.get('feedback','').strip()[:180]}")
             print(f"🎯 Overall (weighted): {overall:.1f}/10")
+            
+            # Check minimum requirements
+            acc_ok = scores.get('accuracy', 0) >= 8.5
+            qual_ok = scores.get('quality', 0) >= 8.0 
+            sat_ok = scores.get('satisfaction', 0) >= 8.0
+            
+            if not (acc_ok and qual_ok and sat_ok):
+                missing = []
+                if not acc_ok: missing.append(f"Accuracy<8.5 ({scores.get('accuracy', 0):.1f})")
+                if not qual_ok: missing.append(f"Quality<8.0 ({scores.get('quality', 0):.1f})")
+                if not sat_ok: missing.append(f"Satisfaction<8.0 ({scores.get('satisfaction', 0):.1f})")
+                print(f"❌ Minimum thresholds not met: {', '.join(missing)}")
+            
             if overall > best_score:
                 best_score = overall
                 best_iter = i
                 print(f"⭐ New best score! (Iteration {i})")
-            if overall >= self.target_score:
-                print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10")
+            if overall >= self.target_score and acc_ok and qual_ok and sat_ok:
+                print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10 (All minimums met)")
                 break
+            elif overall >= self.target_score:
+                print(f"⚠️ Score {overall:.1f}/10 reached, but minimum thresholds not met")
             if i < self.max_iterations:
                 print("🔧 Improving prompt for next iteration...")
                 current_prompt = self.improve_prompt(current_prompt, scores, goal)
@@ -263,7 +296,7 @@ class EnhancedImageAgentV2:
         print("📈 FINAL RESULTS")
         print("="*50)
         print(f"🏆 Best score: {best_score:.1f}/10 (iteration {best_iter})")
-        print(f"🎯 Target: {self.target_score}/10")
+        print(f"🎯 Target: {self.target_score}/10 + minimums (Accuracy≥8.5, Quality≥8.0, Satisfaction≥8.0)")
         print("✅ SUCCESS - Target achieved!" if best_score>=self.target_score else "📊 COMPLETED - Best effort achieved")
         print("📁 All images saved in: current/")
         print(f"🆔 Session ID: {self.session_id}")
