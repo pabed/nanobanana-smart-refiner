@@ -1,6 +1,10 @@
 # nanobanana-smart-refiner
 
-Make greaThat's it. Check the `current/` folder for outputs.
+<p align="center">
+  <img src="BANANA.png" alt="Smart Image Refiner Demo" width="300"/>
+</p>
+
+Make great images without prompt gymnastics. Give it a goal and (ideally) a reference image — it iterates, self‑evaluates, tweaks the prompt, and saves the best shots. Easy.
 
 ## How The Evaluation Works
 
@@ -22,19 +26,31 @@ For an image to be approved (score ≥8.5/10), these minimums must be met:
 
 If any minimum fails, the overall score is capped at 8.4/10, preventing approval and forcing another iteration.
 
-## Modes
+## Modes (Two‑Axis Model)
 
-The system works in **3 modes** depending on your input:
+There are two independent choices — combine them as you like:
 
-1. **Image + Prompt**: Refine existing image with your instructions *(recommended)*
-2. **Text-only**: Generate from scratch with just a prompt
-3. **Smart Iteration**: Automatically improves prompts based on evaluation feedback images without prompt gymnastics. # nanobanana-smart-refiner
+- **Input source**
+  - Image + Prompt: refine an existing image with instructions *(recommended)*
+  - Text‑only: generate from scratch with just a prompt
+- **Strategy**
+  - Single‑pass: one shot, fast baseline (`--iterations 1`)
+  - Smart Iteration: self‑evaluate and refine (`--iterations > 1`)
 
-<p align="center">
-  <img src="BANANA.png" alt="Smart Image Refiner Demo" width="300"/>
-</p>
+### Examples
+```bash
+# Image + Prompt + Smart Iteration (6 rounds)
+python enhanced_agent_v2.py "shiny chrome banana" /path/to/BANANA.png --iterations 6
 
-Make great images without prompt gymnastics. Give it a goal and (ideally) a reference image — it iterates, self-evaluates, tweaks the prompt, and saves the best shots. Easy.
+# Image + Prompt + Single‑pass
+python enhanced_agent_v2.py "shiny chrome banana" /path/to/BANANA.png --iterations 1
+
+# Text‑only + Smart Iteration
+python enhanced_agent_v2.py "shiny chrome banana on black velvet" --iterations 6
+
+# Text‑only + Single‑pass
+python enhanced_agent_v2.py "shiny chrome banana on black velvet" --iterations 1
+```
 
 - Model: `gemini-2.5-flash-image-preview`
 - Max 6 smart iterations

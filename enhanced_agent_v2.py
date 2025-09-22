@@ -305,8 +305,11 @@ def main():
     p = argparse.ArgumentParser(description='Enhanced Image Agent v2.0 (Standalone)')
     p.add_argument('goal', help='Desired transformation or generation goal')
     p.add_argument('image', nargs='?', help='Path to reference image (optional)')
+    p.add_argument('--iterations', '-n', type=int, default=6,
+                   help='Number of iterations: 1 for single-pass, >1 for smart iteration (default: 6)')
     args = p.parse_args()
-    agent = EnhancedImageAgentV2()
+    max_iters = max(1, int(args.iterations))
+    agent = EnhancedImageAgentV2(max_iterations=max_iters)
     agent.run(args.goal, args.image)
 
 if __name__ == '__main__':
