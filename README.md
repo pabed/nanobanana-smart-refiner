@@ -25,16 +25,22 @@ export GOOGLE_API_KEY="your_key"
 python enhanced_agent_v2.py "<prompt>" [optional_reference_image] --iterations <N>
 ```
 
-Examples:
+Examples (smart and exact N):
 ```bash
-# Text‑only, 3 images
+# Text‑only, smart mode (up to 6 with early stop)
+python enhanced_agent_v2.py "two people handshake in office"
+
+# Text‑only, exactly 3 images
 python enhanced_agent_v2.py "two people handshake in office" --iterations 3
 
-# With one reference image, 2 images
+# With one reference image, smart mode
+python enhanced_agent_v2.py "portrait with natural lighting" ./1.png
+
+# With one reference image, exactly 2 images
 python enhanced_agent_v2.py "portrait with natural lighting" ./1.png --iterations 2
 ```
 
-Output files: `current/iteration_<i>_<session>.png` and a concise score line per iteration.
+Output files: `current/iteration_<i>_<session>.png` and a concise score line per iteration. In smart mode, it stops early once all minimums are met and overall ≥ 8.5.
 
 ## Models
 - Generation: `gemini-2.5-flash-image-preview`

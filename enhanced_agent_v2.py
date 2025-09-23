@@ -323,12 +323,16 @@ def main():
     p = argparse.ArgumentParser(description='Enhanced Image Agent v2.0 (Standalone)')
     p.add_argument('goal', help='Desired transformation or generation goal')
     p.add_argument('image', nargs='?', help='Path to reference image (optional, single)')
-    p.add_argument('--iterations', '-n', type=int, default=1, help='Number of iterations to run (1-10).')
+    p.add_argument('--iterations', '-n', type=int, default=None, help='If omitted: smart mode (up to 6, early stop). If set: run exactly N (1-10).')
     args = p.parse_args()
 
     # Determine iteration behavior
-    max_iters = max(1, min(10, int(args.iterations)))
-    run_exact = True
+    if args.iterations is None:
+        max_iters = 6  # smart default
+        run_exact = False  # allow early stop on success
+    else:
+        max_iters = max(1, min(10, int(args.iterations)))
+        run_exact = True
 
     # Resolve reference images
     ref_paths: Optional[List[str]] = None
