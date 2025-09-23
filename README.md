@@ -12,7 +12,9 @@
 
 ## Demo
 
-https://user-images.githubusercontent.com/16362586/nanobanana-smart-refiner/raw/main/demo_video.mp4
+![Demo Video](demo_video.mp4)
+
+https://github.com/pabed/nanobanana-smart-refiner/blob/main/demo_video.mp4?raw=true
 
 *Watch the nanobanana-smart-refiner in action: transforming vintage poses into dancing poses while preserving all other image characteristics with crystal-clear text readability (1920x1000, broadcast quality)*
 
