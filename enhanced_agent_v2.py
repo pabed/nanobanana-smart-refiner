@@ -41,9 +41,9 @@ class EnhancedImageAgentV2:
     def __init__(self, api_key: str = None, max_iterations: int = 6, run_exact: bool = False):
         self.api_key = api_key or setup_environment(allow_missing=False)
         genai.configure(api_key=self.api_key)
-        # Keep generation model as image-preview; evaluator per request uses models/gemini-2.5-flash
+        # Keep generation model as image-preview; evaluator uses 2.5-pro for better anatomy analysis
         self.model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
-        self.eval_model = genai.GenerativeModel("models/gemini-2.5-flash")
+        self.eval_model = genai.GenerativeModel("models/gemini-2.5-pro")
         self.max_iterations = max_iterations
         self.run_exact = run_exact  # if True, run exactly N iterations (no early stop)
         self.target_score = 8.5  # Raised approval threshold
@@ -118,6 +118,56 @@ class EnhancedImageAgentV2:
             print("ℹ️ Tip: Provide a reference image; this model is optimized for image-to-image.")
         return None
 
+    def _check_hand_chirality(self, image: Image.Image, prompt: str) -> dict:
+        """Dedicated chirality check to detect 'two left hands' and similar errors"""
+        try:
+            chirality_prompt = """
+            CRITICAL DEFECT DETECTION: You are examining this image for a SPECIFIC anatomical error.
+
+            FOCUS EXCLUSIVELY ON HAND CHIRALITY ERRORS:
+
+            Examine each person in the image carefully:
+            - Look at ALL visible hands 
+            - For each hand, determine if it's a LEFT hand or RIGHT hand by examining thumb position
+            - Check if any person has TWO LEFT HANDS or TWO RIGHT HANDS
+
+            The user suspects there may be a "two left hands" error - where a person has two left hands instead of one left and one right.
+
+            CRITICAL QUESTION: 
+            Does any person in this image have two hands that are both LEFT hands or both RIGHT hands?
+
+            RESPOND EXACTLY:
+            CHIRALITY_ERROR: YES or NO
+            ERROR_TYPE: [if YES, describe which person has what error]
+            DETAILS: [brief explanation of thumb positions observed]
+            """
+
+            response = self.eval_model.generate_content([chirality_prompt, image])
+            chirality_text = response.candidates[0].content.parts[0].text
+            self._log(f"🔎 [CHIRALITY] Full response: {chirality_text}")
+
+            # Parse chirality check results  
+            has_error = False
+            error_type = "no error detected"
+            
+            # Look for explicit YES
+            if 'CHIRALITY_ERROR:' in chirality_text.upper() and 'YES' in chirality_text.upper():
+                has_error = True
+                # Extract error type
+                for line in chirality_text.split('\n'):
+                    if 'ERROR_TYPE:' in line.upper() and ':' in line:
+                        error_type = line.split(':', 1)[1].strip()
+                        break
+
+            return {
+                'has_error': has_error,
+                'error_type': error_type,
+                'full_response': chirality_text
+            }
+        except Exception as e:
+            self._log(f"⚠️ [CHIRALITY] Check failed: {e}")
+            return {'has_error': False, 'error_type': 'check failed', 'full_response': str(e)}
+
     def evaluate_image(self, image: Image.Image, original_prompt: str, iteration: int = 1, reference_images: Optional[List[Image.Image]] = None) -> dict:
         try:
             if reference_images:
@@ -128,7 +178,7 @@ class EnhancedImageAgentV2:
 
                 Evaluate with 1-10 scores (10 is perfect):
                 - FACE_FIDELITY: If a human face is visible, how closely does identity/likeness match the reference (same person, features, proportions)? If no face or not applicable, use 10.
-                - ANATOMY: Human anatomy correctness. Explicitly check: number of hands (2), arms (2), legs (2), feet (2), eyes (2), facial symmetry; count fingers per visible hand (5 each, unless occluded), toes per visible foot (5). Penalize extra/missing/merged digits, warped limbs, or distortions.
+                - ANATOMY: Human anatomy correctness. Explicitly check: number of hands (2), arms (2), legs (2), feet (2), eyes (2), facial symmetry; count fingers per visible hand (5 each, unless occluded), toes per visible foot (5). CRITICAL: Check hand chirality - verify each person has ONE left hand and ONE right hand (look at thumb positions to distinguish left vs right hands). Penalize extra/missing/merged digits, warped limbs, distortions, or having two left hands/two right hands.
                 - CONSISTENCY: Consistency of key attributes (clothing, hair color/length, accessories) vs reference when they should remain.
                 - ACCURACY: How well it fulfills the goal prompt changes.
                 - QUALITY: Technical quality (clarity, composition, lighting, artifacts).
@@ -152,7 +202,7 @@ class EnhancedImageAgentV2:
 
                 Evaluate with 1-10 scores (10 is perfect):
                 - FACE_FIDELITY: If a human face is visible, ensure identity consistency across the image and natural facial proportions. If not applicable, use 10.
-                - ANATOMY: Human anatomy correctness. Explicitly check: number of hands (2), arms (2), legs (2), feet (2), eyes (2); count fingers per visible hand (5), toes per visible foot (5). Penalize extra/missing/merged digits, warped limbs, or distortions.
+                - ANATOMY: Human anatomy correctness. Explicitly check: number of hands (2), arms (2), legs (2), feet (2), eyes (2); count fingers per visible hand (5), toes per visible foot (5). CRITICAL: Check hand chirality - verify each person has ONE left hand and ONE right hand (examine thumb positions carefully to distinguish left vs right hands). Penalize extra/missing/merged digits, warped limbs, distortions, or having two left hands/two right hands.
                 - CONSISTENCY: Internal consistency (no duplicated limbs, no morphing items).
                 - ACCURACY: How well it fulfills the goal prompt.
                 - QUALITY: Technical quality (clarity, composition, lighting, artifacts).
@@ -183,9 +233,13 @@ class EnhancedImageAgentV2:
                 scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and not reference_images else 5.0)
             self._log(f"📊 [EVAL] Parsed scores: {scores}")
 
-            # No second-pass anatomy check (simplified)
-
-            # Re-evaluate minimums and weighting using possibly updated anatomy
+            # Dedicated chirality check for critical anatomical errors
+            chirality_check = self._check_hand_chirality(image, original_prompt)
+            if chirality_check['has_error']:
+                self._log(f"🚨 [CHIRALITY] Critical error detected: {chirality_check['error_type']}")
+                # Severely penalize anatomy score for chirality errors
+                scores['anatomy'] = min(scores['anatomy'], 3.0)  # Cap at 3/10 for chirality errors
+                self._log(f"📊 [EVAL] Anatomy score reduced to {scores['anatomy']} due to chirality error")
 
             # Apply minimum thresholds
             min_thresholds = {
