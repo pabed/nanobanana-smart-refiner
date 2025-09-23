@@ -16,9 +16,9 @@ from io import BytesIO
 import base64
 import google.generativeai as genai
 
-def setup_environment():
+def setup_environment(allow_missing: bool = False):
     api_key = os.getenv('GOOGLE_API_KEY')
-    if not api_key:
+    if not api_key and not allow_missing:
         print("❌ Error: GOOGLE_API_KEY not found in environment variables")
         print("💡 export GOOGLE_API_KEY='your_key_here'")
         sys.exit(1)
@@ -39,23 +39,92 @@ def save_pil_image(image, filepath):
 
 class EnhancedImageAgentV2:
     def __init__(self, api_key: str = None, max_iterations: int = 6, run_exact: bool = False):
-        self.api_key = api_key or setup_environment()
+        self.api_key = api_key or setup_environment(allow_missing=False)
         genai.configure(api_key=self.api_key)
+        # Keep generation model as image-preview; evaluator per request uses models/gemini-2.5-flash
         self.model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
+        self.eval_model = genai.GenerativeModel("models/gemini-2.5-flash")
         self.max_iterations = max_iterations
         self.run_exact = run_exact  # if True, run exactly N iterations (no early stop)
         self.target_score = 8.5  # Raised approval threshold
         self.session_id = f"{int(time.time())}_{random.randint(10000, 99999)}"
         os.makedirs("current", exist_ok=True)
+        self._current_iter = 0
+
+    def _log(self, msg: str):
+        print(msg)
+
+    def _verify_anatomy_counts(self, image: Image.Image) -> dict:
+        """Ask the eval model to count visible limbs/digits; compute a penalty score (1-10)."""
+        try:
+            verify_prompt = (
+                "Strictly count ONLY what is clearly visible in this image. Return numbers, no prose.\n"
+                "Return EXACTLY these lines (integers only):\n"
+                "HANDS: X\nARMS: X\nLEGS: X\nFEET: X\nEYES: X\nVISIBLE_HANDS: X\nFINGERS_PER_VISIBLE_HAND: v1,v2,v3 (omit if none)\n"
+            )
+            resp = self.eval_model.generate_content(contents=[verify_prompt, image])
+            text = resp.candidates[0].content.parts[0].text if hasattr(resp, 'candidates') else ""
+            def get_int(key: str, default: int = -1) -> int:
+                m = re.search(rf"{key}:\s*(\d+)", text, re.IGNORECASE)
+                try:
+                    return int(m.group(1)) if m else default
+                except Exception:
+                    return default
+            def get_list_ints(key: str) -> list:
+                m = re.search(rf"{key}:\s*([\d, ]+)", text, re.IGNORECASE)
+                if not m:
+                    return []
+                vals = [v.strip() for v in m.group(1).split(',') if v.strip()]
+                out = []
+                for v in vals:
+                    try:
+                        out.append(int(v))
+                    except Exception:
+                        pass
+                return out
+            counts = {
+                'hands': get_int('HANDS', -1),
+                'arms': get_int('ARMS', -1),
+                'legs': get_int('LEGS', -1),
+                'feet': get_int('FEET', -1),
+                'eyes': get_int('EYES', -1),
+                'visible_hands': get_int('VISIBLE_HANDS', -1),
+                'fingers_per_visible_hand': get_list_ints('FINGERS_PER_VISIBLE_HAND'),
+                'raw': text.strip()
+            }
+            # Compute penalty: start at 10 and subtract for mismatches
+            score = 10.0
+            expected = {'hands': 2, 'arms': 2, 'legs': 2, 'feet': 2, 'eyes': 2}
+            for k, exp in expected.items():
+                val = counts.get(k, -1)
+                if val == -1:
+                    # unknown -> slight uncertainty penalty
+                    score -= 0.5
+                elif val != exp:
+                    # penalize proportional to deviation
+                    score -= min(4.0, abs(val - exp) * 2.0)
+            # Fingers per visible hand (if provided)
+            fps = counts.get('fingers_per_visible_hand') or []
+            for f in fps:
+                if f != 5:
+                    score -= 1.0
+            score = max(1.0, min(10.0, score))
+            counts['penalized_anatomy'] = round(score, 2)
+            return counts
+        except Exception as e:
+            return {'error': str(e), 'penalized_anatomy': None}
 
     def generate_image(self, prompt: str, reference_images: Optional[List[Image.Image]] = None, max_retries: int = 3):
         for attempt in range(max_retries):
             try:
                 refs = reference_images or []
                 if refs:
-                    contents = [f"Based on these reference images, {prompt}"] + refs
+                    gen_text = f"Based on these reference images, {prompt}"
+                    contents = [gen_text] + refs
                 else:
-                    contents = prompt
+                    gen_text = prompt
+                    contents = gen_text
+                self._log(f"🧩 [GEN] Attempt {attempt+1}/{max_retries} | Prompt: {gen_text}")
                 response = self.model.generate_content(contents=contents)
                 if hasattr(response, 'candidates') and response.candidates:
                     cand = response.candidates[0]
@@ -79,6 +148,7 @@ class EnhancedImageAgentV2:
                                         continue
                                     img = Image.open(BytesIO(image_bytes))
                                     img.load()
+                                    self._log(f"🖼️ [GEN] Received image: {img.width}x{img.height}")
                                     return img
                                 except Exception:
                                     try:
@@ -87,6 +157,7 @@ class EnhancedImageAgentV2:
                                             continue
                                         img = Image.open(BytesIO(rb))
                                         img.load()
+                                        self._log(f"🖼️ [GEN] Fallback image parsed: {img.width}x{img.height}")
                                         return img
                                     except Exception:
                                         continue
@@ -95,10 +166,10 @@ class EnhancedImageAgentV2:
                         if hasattr(part, 'text'):
                             txt = part.text or ""
                             if 'image' in txt.lower():
-                                print(f"⚠️ Model returned text instead of pixels: {txt[:100]}...")
+                                self._log(f"⚠️ [GEN] Text instead of pixels: {txt[:140]}...")
                 raise Exception("No image data found in response")
             except Exception as e:
-                print(f"⚠️ Generation error: {e}")
+                self._log(f"⚠️ [GEN] Generation error: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(3)
         print("❌ Failed to generate image after all retries")
@@ -156,9 +227,12 @@ class EnhancedImageAgentV2:
                 NOTES: <one short sentence about any issues found>
                 """
                 contents = [eval_prompt, image]
-
-            response = self.model.generate_content(contents=contents)
+            self._log("🔎 [EVAL] Prompt:" )
+            self._log(eval_prompt.strip()[:800])
+            response = self.eval_model.generate_content(contents=contents)
             eval_text = response.candidates[0].content.parts[0].text
+            self._log("🧾 [EVAL] Raw response:")
+            self._log(eval_text.strip()[:1000])
 
             # Parse scores
             keys = ['FACE_FIDELITY','ANATOMY','CONSISTENCY','ACCURACY','QUALITY','SATISFACTION']
@@ -166,6 +240,18 @@ class EnhancedImageAgentV2:
             for key in keys:
                 m = re.search(rf'{key}:\s*(\d+(?:\.\d+)?)', eval_text, re.IGNORECASE)
                 scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and not reference_images else 5.0)
+            self._log(f"📊 [EVAL] Parsed scores: {scores}")
+
+            # Second-pass verification: explicit anatomy counting to catch extra/missing limbs
+            verify = self._verify_anatomy_counts(image)
+            if verify.get('penalized_anatomy') is not None:
+                before = scores.get('anatomy', 5.0)
+                after = min(before, float(verify['penalized_anatomy']))
+                if after < before:
+                    scores['anatomy'] = after
+            self._log(f"🧮 [EVAL] Anatomy verify: {verify}")
+
+            # Re-evaluate minimums and weighting using possibly updated anatomy
 
             # Apply minimum thresholds
             min_thresholds = {
@@ -210,9 +296,10 @@ class EnhancedImageAgentV2:
             scores['overall'] = round(weighted_overall, 2)
             scores['feedback'] = notes or eval_text
             scores['iteration'] = iteration
+            self._log(f"✅ [EVAL] Final scores (w/ overall): {scores}")
             return scores
         except Exception as e:
-            print(f"⚠️ Evaluation error: {e}")
+            self._log(f"⚠️ [EVAL] Evaluation error: {e}")
             return {
                 'face_fidelity': 10.0 if not reference_images else 5.0,
                 'anatomy': 5.0,
@@ -235,7 +322,8 @@ class EnhancedImageAgentV2:
             """
             resp = self.model.generate_content(improvement_prompt)
             text = resp.candidates[0].content.parts[0].text.strip()
-            return text.strip('"\'`').strip() or current_prompt
+            improved = text.strip('"\'`').strip() or current_prompt
+            return improved
         except Exception:
             return current_prompt
 
@@ -252,6 +340,10 @@ class EnhancedImageAgentV2:
         print(f"🎯 Goal: {goal}")
         if reference_image_paths:
             print(f"🖼️ Input images: {', '.join(reference_image_paths)}")
+        self._log(f"SESSION {self.session_id} START")
+        self._log(f"GOAL: {goal}")
+        if reference_image_paths:
+            self._log(f"REFS: {', '.join(reference_image_paths)}")
         print()
         current_prompt = goal
         best_score = 0.0
@@ -260,13 +352,16 @@ class EnhancedImageAgentV2:
             print(f"🔄 ITERATION {i}/{self.max_iterations}")
             print("="*50)
             print(f"📝 Current prompt: {current_prompt[:100]+('...' if len(current_prompt)>100 else '')}")
+            self._current_iter = i
             print("🎨 Generating image...")
             gen_img = self.generate_image(current_prompt, ref_imgs)
             if gen_img is None:
                 print("❌ Skipping iteration due to generation failure")
+                self._log(f"❌ [ITER {i}] Generation failed")
                 continue
             out_path = f"current/iteration_{i}_{self.session_id}.png"
             save_pil_image(gen_img, out_path)
+            self._log(f"💾 [ITER {i}] Saved {out_path}")
             print("🔍 Evaluating image...")
             scores = self.evaluate_image(gen_img, goal, i, ref_imgs)
             overall = scores.get('overall', 5.0)
@@ -295,16 +390,22 @@ class EnhancedImageAgentV2:
                 best_score = overall
                 best_iter = i
                 print(f"⭐ New best score! (Iteration {i})")
+                self._log(f"🌟 [ITER {i}] New best: {best_score}")
             # Early stop only if not forced to run exact count
-            if (overall >= self.target_score and acc_ok and qual_ok and sat_ok) and not self.run_exact:
-                print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10 (All minimums met)")
-                break
-            elif overall >= self.target_score:
+            if overall >= self.target_score and acc_ok and qual_ok and sat_ok:
+                if not self.run_exact:
+                    print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10 (All minimums met)")
+                    self._log(f"🏁 [STOP] Early stop at iteration {i} with score {overall}")
+                    break
+                else:
+                    print(f"ℹ️ Score {overall:.1f}/10 reached and minimums met; continuing to complete requested iterations")
+            elif overall >= self.target_score and not (acc_ok and qual_ok and sat_ok):
                 print(f"⚠️ Score {overall:.1f}/10 reached, but minimum thresholds not met")
             if i < self.max_iterations:
                 print("🔧 Improving prompt for next iteration...")
                 current_prompt = self.improve_prompt(current_prompt, scores, goal)
                 print("✨ Enhanced prompt ready\n")
+                self._log(f"✏️ [ITER {i}] Next prompt: {current_prompt}")
         print("📈 FINAL RESULTS")
         print("="*50)
         print(f"🏆 Best score: {best_score:.1f}/10 (iteration {best_iter})")
@@ -312,30 +413,22 @@ class EnhancedImageAgentV2:
         print("✅ SUCCESS - Target achieved!" if best_score>=self.target_score else "📊 COMPLETED - Best effort achieved")
         print("📁 All images saved in: current/")
         print(f"🆔 Session ID: {self.session_id}")
+        self._log(f"SESSION {self.session_id} END | best={best_score} @iter={best_iter}")
 
 def main():
     p = argparse.ArgumentParser(description='Enhanced Image Agent v2.0 (Standalone)')
     p.add_argument('goal', help='Desired transformation or generation goal')
     p.add_argument('image', nargs='?', help='Path to reference image (optional, single)')
-    p.add_argument('--refs', '-r', nargs='+', help='One or more paths to reference images (multi-image conditioning)')
-    p.add_argument('--iterations', '-n', type=int, default=None,
-                   help='Specify exact iterations (1-10). If omitted, runs smart up to 6 with early stop.')
-    p.add_argument('--exact', action='store_true', help='Force running exactly N iterations even if target is met')
+    p.add_argument('--iterations', '-n', type=int, default=1, help='Number of iterations to run (1-10).')
     args = p.parse_args()
 
     # Determine iteration behavior
-    if args.iterations is None:
-        max_iters = 6  # smart default
-        run_exact = False  # allow early stop on success
-    else:
-        max_iters = max(1, min(10, int(args.iterations)))
-        run_exact = True if args.exact else True  # exact when user specifies N
+    max_iters = max(1, min(10, int(args.iterations)))
+    run_exact = True
 
     # Resolve reference images
     ref_paths: Optional[List[str]] = None
-    if args.refs:
-        ref_paths = args.refs
-    elif args.image:
+    if args.image:
         ref_paths = [args.image]
 
     agent = EnhancedImageAgentV2(max_iterations=max_iters, run_exact=run_exact)
