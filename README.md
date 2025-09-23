@@ -1,4 +1,4 @@
-# nanobanana-smart-refiner (simplified)
+# nanobanana-smart-refiner
 
 <p align="center">
   <img src="BANANA.png" alt="Smart Image Refiner Demo" width="300"/>
@@ -8,7 +8,16 @@
   Prompt → generate → score → repeat N times.
   <br/>
   Saves all images to `current/`.
-  </p>
+</p>
+
+## Demo
+
+<video width="800" controls>
+  <source src="./demo_video.mp4" type="video/mp4">
+  Your browser does not support the video tag.
+</video>
+
+*Watch the nanobanana-smart-refiner in action: transforming vintage poses into dancing poses while preserving all other image characteristics with crystal-clear text readability*
 
 ## Quick Start
 
