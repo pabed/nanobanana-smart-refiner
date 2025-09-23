@@ -22,7 +22,7 @@
   <div>
     <p align="center">
       <strong>AI Transformation</strong><br/>
-      <img src="demo_high_quality.gif" alt="Smart Image Refiner Demo Animation" width="600"/>
+      <img src="demo_high_quality.gif" alt="Smart Image Refiner Demo Animation" width="1500"/>
     </p>
   </div>
 </div>
