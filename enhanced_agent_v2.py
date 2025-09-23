@@ -15,6 +15,22 @@ from PIL import Image
 from io import BytesIO
 import base64
 import google.generativeai as genai
+import warnings
+
+# Suppress Google AI SDK warnings and logs
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+warnings.filterwarnings('ignore')
+
+# Suppress stderr warnings from Google AI SDK
+class SuppressStderr:
+    def __enter__(self):
+        self._original_stderr = sys.stderr
+        sys.stderr = open(os.devnull, 'w')
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        sys.stderr.close()
+        sys.stderr = self._original_stderr
 
 def setup_environment(allow_missing: bool = False):
     api_key = os.getenv('GOOGLE_API_KEY')
@@ -35,15 +51,15 @@ def save_pil_image(image, filepath):
     out_dir = os.path.dirname(filepath) or 'current'
     os.makedirs(out_dir, exist_ok=True)
     image.save(filepath)
-    print(f"💾 Saved: {filepath} ({image.width}x{image.height})")
+    # Hide verbose save logging
 
 class EnhancedImageAgentV2:
     def __init__(self, api_key: str = None, max_iterations: int = 6, run_exact: bool = False):
         self.api_key = api_key or setup_environment(allow_missing=False)
         genai.configure(api_key=self.api_key)
-        # Keep generation model as image-preview; evaluator uses 2.5-pro for better anatomy analysis
+        # Keep generation model as image-preview; evaluator uses 2.5-flash
         self.model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
-        self.eval_model = genai.GenerativeModel("models/gemini-2.5-pro")
+        self.eval_model = genai.GenerativeModel("models/gemini-2.5-flash")
         self.max_iterations = max_iterations
         self.run_exact = run_exact  # if True, run exactly N iterations (no early stop)
         self.target_score = 8.5  # Raised approval threshold
@@ -52,7 +68,8 @@ class EnhancedImageAgentV2:
         self._current_iter = 0
 
     def _log(self, msg: str):
-        print(msg)
+        # Silent logging - only print if explicitly needed
+        pass
 
 
     def generate_image(self, prompt: str, reference_images: Optional[List[Image.Image]] = None, max_retries: int = 3):
@@ -65,8 +82,11 @@ class EnhancedImageAgentV2:
                 else:
                     gen_text = prompt
                     contents = gen_text
-                self._log(f"🧩 [GEN] Attempt {attempt+1}/{max_retries} | Prompt: {gen_text}")
-                response = self.model.generate_content(contents=contents)
+                # Only show generation attempt on failures
+                if attempt > 0:
+                    self._log(f"🧩 [GEN] Retry {attempt+1}/{max_retries}")
+                with SuppressStderr():
+                    response = self.model.generate_content(contents=contents)
                 if hasattr(response, 'candidates') and response.candidates:
                     cand = response.candidates[0]
                     if hasattr(cand, 'content') and hasattr(cand.content, 'parts'):
@@ -89,7 +109,7 @@ class EnhancedImageAgentV2:
                                         continue
                                     img = Image.open(BytesIO(image_bytes))
                                     img.load()
-                                    self._log(f"🖼️ [GEN] Received image: {img.width}x{img.height}")
+                                    # No verbose logging for successful generation
                                     return img
                                 except Exception:
                                     try:
@@ -98,7 +118,7 @@ class EnhancedImageAgentV2:
                                             continue
                                         img = Image.open(BytesIO(rb))
                                         img.load()
-                                        self._log(f"🖼️ [GEN] Fallback image parsed: {img.width}x{img.height}")
+                                        # No verbose logging for fallback success
                                         return img
                                     except Exception:
                                         continue
@@ -142,9 +162,10 @@ class EnhancedImageAgentV2:
             DETAILS: [brief explanation of thumb positions observed]
             """
 
-            response = self.eval_model.generate_content([chirality_prompt, image])
+            with SuppressStderr():
+                response = self.eval_model.generate_content([chirality_prompt, image])
             chirality_text = response.candidates[0].content.parts[0].text
-            self._log(f"🔎 [CHIRALITY] Full response: {chirality_text}")
+            # Hide verbose chirality logging
 
             # Parse chirality check results  
             has_error = False
@@ -165,7 +186,7 @@ class EnhancedImageAgentV2:
                 'full_response': chirality_text
             }
         except Exception as e:
-            self._log(f"⚠️ [CHIRALITY] Check failed: {e}")
+            # Hide chirality check failure logging
             return {'has_error': False, 'error_type': 'check failed', 'full_response': str(e)}
 
     def evaluate_image(self, image: Image.Image, original_prompt: str, iteration: int = 1, reference_images: Optional[List[Image.Image]] = None) -> dict:
@@ -218,12 +239,11 @@ class EnhancedImageAgentV2:
                 NOTES: <one short sentence about any issues found>
                 """
                 contents = [eval_prompt, image]
-            self._log("🔎 [EVAL] Prompt:" )
-            self._log(eval_prompt.strip()[:800])
-            response = self.eval_model.generate_content(contents=contents)
+            # Hide verbose evaluation logs
+            with SuppressStderr():
+                response = self.eval_model.generate_content(contents=contents)
             eval_text = response.candidates[0].content.parts[0].text
-            self._log("🧾 [EVAL] Raw response:")
-            self._log(eval_text.strip()[:1000])
+            # Hide raw response logging
 
             # Parse scores
             keys = ['FACE_FIDELITY','ANATOMY','CONSISTENCY','ACCURACY','QUALITY','SATISFACTION']
@@ -231,15 +251,13 @@ class EnhancedImageAgentV2:
             for key in keys:
                 m = re.search(rf'{key}:\s*(\d+(?:\.\d+)?)', eval_text, re.IGNORECASE)
                 scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and not reference_images else 5.0)
-            self._log(f"📊 [EVAL] Parsed scores: {scores}")
+            # Hide parsed scores logging
 
             # Dedicated chirality check for critical anatomical errors
             chirality_check = self._check_hand_chirality(image, original_prompt)
             if chirality_check['has_error']:
-                self._log(f"🚨 [CHIRALITY] Critical error detected: {chirality_check['error_type']}")
                 # Severely penalize anatomy score for chirality errors
                 scores['anatomy'] = min(scores['anatomy'], 3.0)  # Cap at 3/10 for chirality errors
-                self._log(f"📊 [EVAL] Anatomy score reduced to {scores['anatomy']} due to chirality error")
 
             # Apply minimum thresholds
             min_thresholds = {
@@ -284,7 +302,7 @@ class EnhancedImageAgentV2:
             scores['overall'] = round(weighted_overall, 2)
             scores['feedback'] = notes or eval_text
             scores['iteration'] = iteration
-            self._log(f"✅ [EVAL] Final scores (w/ overall): {scores}")
+            # Hide final scores logging
             return scores
         except Exception as e:
             self._log(f"⚠️ [EVAL] Evaluation error: {e}")
@@ -316,62 +334,52 @@ class EnhancedImageAgentV2:
         print(f"🎯 Goal: {goal}")
         if reference_image_paths:
             print(f"🖼️ Input images: {', '.join(reference_image_paths)}")
-        self._log(f"SESSION {self.session_id} START")
-        self._log(f"GOAL: {goal}")
-        if reference_image_paths:
-            self._log(f"REFS: {', '.join(reference_image_paths)}")
+        # Hide session logging
         print()
         current_prompt = goal
         best_score = 0.0
         best_iter = 0
         for i in range(1, self.max_iterations+1):
             print(f"🔄 ITERATION {i}/{self.max_iterations}")
-            print("="*50)
-            print(f"📝 Current prompt: {current_prompt[:100]+('...' if len(current_prompt)>100 else '')}")
+            print("="*30)
+            # Hide verbose prompt logging
             self._current_iter = i
-            print("🎨 Generating image...")
+            print("🎨 Generating...")
             gen_img = self.generate_image(current_prompt, ref_imgs)
             if gen_img is None:
-                print("❌ Skipping iteration due to generation failure")
-                self._log(f"❌ [ITER {i}] Generation failed")
+                print("❌ Generation failed")
                 continue
             out_path = f"current/iteration_{i}_{self.session_id}.png"
             save_pil_image(gen_img, out_path)
-            self._log(f"💾 [ITER {i}] Saved {out_path}")
-            print("🔍 Evaluating image...")
+            # Hide save path logging
+            print("🔍 Evaluating...")
             scores = self.evaluate_image(gen_img, goal, i, ref_imgs)
             overall = scores.get('overall', 5.0)
-            print("📊 Face={:.1f} Anat={:.1f} Acc={:.1f} Qual={:.1f} Sat={:.1f} → Overall={:.1f}".format(
-                scores.get('face_fidelity', 0), scores.get('anatomy', 0), scores.get('accuracy', 0), scores.get('quality', 0), scores.get('satisfaction', 0), overall
-            ))
+            print("📊 Overall Score: {:.1f}/10".format(overall))
             
             if overall > best_score:
                 best_score = overall
                 best_iter = i
-                print(f"⭐ New best score! (Iteration {i})")
-                self._log(f"🌟 [ITER {i}] New best: {best_score}")
+                print(f"⭐ New best! (Iteration {i})")
             # Early stop only if not forced to run exact count
             acc_ok = scores.get('accuracy', 0) >= 8.5
             qual_ok = scores.get('quality', 0) >= 8.0
             sat_ok = scores.get('satisfaction', 0) >= 8.0
             if overall >= self.target_score and acc_ok and qual_ok and sat_ok:
                 if not self.run_exact:
-                    print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10 (All minimums met)")
-                    self._log(f"🏁 [STOP] Early stop at iteration {i} with score {overall}")
+                    print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10")
                     break
                 else:
-                    print(f"ℹ️ Score {overall:.1f} (min OK); continuing to complete iterations")
-            elif overall >= self.target_score and not (acc_ok and qual_ok and sat_ok):
-                print(f"⚠️ Score {overall:.1f} but minimum thresholds not met")
+                    print(f"ℹ️ Target met; continuing for exact iterations")
             # Keep same prompt for simplicity
+        print()
         print("📈 FINAL RESULTS")
-        print("="*50)
+        print("="*30)
         print(f"🏆 Best score: {best_score:.1f}/10 (iteration {best_iter})")
-        print(f"🎯 Target: {self.target_score}/10 + minimums (Accuracy≥8.5, Quality≥8.0, Satisfaction≥8.0)")
-        print("✅ SUCCESS - Target achieved!" if best_score>=self.target_score else "📊 COMPLETED - Best effort achieved")
+        print(f"🎯 Target: {self.target_score}/10")
+        print("✅ SUCCESS!" if best_score>=self.target_score else "📊 COMPLETED")
         print("📁 All images saved in: current/")
-        print(f"🆔 Session ID: {self.session_id}")
-        self._log(f"SESSION {self.session_id} END | best={best_score} @iter={best_iter}")
+        # Hide session logging
 
 def main():
     p = argparse.ArgumentParser(description='Enhanced Image Agent v2.0 (Standalone)')
