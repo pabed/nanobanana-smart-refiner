@@ -34,22 +34,62 @@ There are two independent choices — combine them as you like:
   - Image + Prompt: refine an existing image with instructions *(recommended)*
   - Text‑only: generate from scratch with just a prompt
 - **Strategy**
-  - Single‑pass: one shot, fast baseline (`--iterations 1`)
-  - Smart Iteration: self‑evaluate and refine (`--iterations > 1`)
+  - Smart default: up to 6 rounds with early stop on success (no flag)
+  - Exact N: run exactly N rounds (1–10), even if the first shot meets all minimums (`--iterations N`)
 
 ### Examples
 ```bash
-# Image + Prompt + Smart Iteration (6 rounds)
-python enhanced_agent_v2.py "shiny chrome banana" /path/to/BANANA.png --iterations 6
+# Image + Prompt + Smart default (up to 6, early stop)
+python enhanced_agent_v2.py "shiny chrome banana" /path/to/BANANA.png
 
 # Image + Prompt + Single‑pass
 python enhanced_agent_v2.py "shiny chrome banana" /path/to/BANANA.png --iterations 1
 
-# Text‑only + Smart Iteration
-python enhanced_agent_v2.py "shiny chrome banana on black velvet" --iterations 6
+# Text‑only + Smart default (up to 6, early stop)
+python enhanced_agent_v2.py "shiny chrome banana on black velvet"
 
-# Text‑only + Single‑pass
-python enhanced_agent_v2.py "shiny chrome banana on black velvet" --iterations 1
+# Text‑only + Exact 4 rounds (outputs 4 images, prints scores for each)
+python enhanced_agent_v2.py "shiny chrome banana on black velvet" --iterations 4
+
+# Text‑only + Exact 7 rounds (outputs 7 images, prints scores for each)
+python enhanced_agent_v2.py "shiny chrome banana on black velvet" --iterations 7
+
+
+## Iteration Behavior
+
+- **Default (smart)**: If you do not pass `--iterations`, the app runs up to 6 rounds and stops early when all minimums are met and overall ≥ 8.5.
+- **Exact N (1–10)**: If you pass `--iterations N`, it always runs exactly N rounds and produces N images, even if the first meets all minimums. Each iteration’s scores are printed and the best is highlighted at the end.
+
+### Exact-N Examples (outputs N images + scores)
+```bash
+# Text-only, exactly 4 images (prints scores for 1..4)
+python enhanced_agent_v2.py "chrome banana on black velvet" --iterations 4
+
+# Text-only, exactly 7 images (prints scores for 1..7)
+python enhanced_agent_v2.py "chrome banana on black velvet" --iterations 7
+
+# Image + Prompt, exactly 4 images
+python enhanced_agent_v2.py "studio portrait, soft key light" /path/to/BANANA.png --iterations 4
+
+# Image + Prompt, exactly 7 images with multiple refs
+python enhanced_agent_v2.py "match outfit and lighting" --refs ref1.jpg ref2.png ref3.jpg --iterations 7
+```
+
+Result files are saved under `current/` as `iteration_<i>_<session>.png`. The console prints the per-iteration scores, notes, and the final best.
+
+## Multi‑Image References
+
+Use `--refs` (or `-r`) to condition on several images:
+
+```bash
+python enhanced_agent_v2.py "golden retriever wearing red bandana" --refs ./dog1.jpg ./dog2.png
+```
+
+When multiple references are provided, the generator conditions on all of them and the evaluator compares the output against the set.
+# Exact iteration control: passing --iterations N runs exactly N rounds (1–10),
+# saving N images and printing per‑iteration metric scores, even if the first meets all minimums.
+python enhanced_agent_v2.py "shiny chrome banana" /path/to/BANANA.png --iterations 4
+python enhanced_agent_v2.py "shiny chrome banana on black velvet" --iterations 7
 ```
 
 - Model: `gemini-2.5-flash-image-preview`
