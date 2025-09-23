@@ -12,9 +12,20 @@
 
 ## Demo
 
-<p align="center">
-  <img src="demo_high_quality.gif" alt="Smart Image Refiner Demo Animation" width="800"/>
-</p>
+<div style="display: flex; justify-content: center; align-items: center; gap: 20px;">
+  <div>
+    <p align="center">
+      <strong>Reference Image</strong><br/>
+      <img src="vintage.png" alt="Vintage Reference" width="200"/>
+    </p>
+  </div>
+  <div>
+    <p align="center">
+      <strong>AI Transformation</strong><br/>
+      <img src="demo_high_quality.gif" alt="Smart Image Refiner Demo Animation" width="600"/>
+    </p>
+  </div>
+</div>
 
 *Watch the nanobanana-smart-refiner in action: transforming vintage poses into dancing poses while preserving all other image characteristics with crystal-clear text readability*
 
