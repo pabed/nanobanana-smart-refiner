@@ -10,6 +10,7 @@ import time
 import random
 import argparse
 import re
+from typing import List, Optional
 from PIL import Image
 from io import BytesIO
 import base64
@@ -37,19 +38,24 @@ def save_pil_image(image, filepath):
     print(f"💾 Saved: {filepath} ({image.width}x{image.height})")
 
 class EnhancedImageAgentV2:
-    def __init__(self, api_key: str = None, max_iterations: int = 6):
+    def __init__(self, api_key: str = None, max_iterations: int = 6, run_exact: bool = False):
         self.api_key = api_key or setup_environment()
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel("gemini-2.5-flash-image-preview")
         self.max_iterations = max_iterations
+        self.run_exact = run_exact  # if True, run exactly N iterations (no early stop)
         self.target_score = 8.5  # Raised approval threshold
         self.session_id = f"{int(time.time())}_{random.randint(10000, 99999)}"
         os.makedirs("current", exist_ok=True)
 
-    def generate_image(self, prompt: str, reference_image: Image.Image = None, max_retries: int = 3):
+    def generate_image(self, prompt: str, reference_images: Optional[List[Image.Image]] = None, max_retries: int = 3):
         for attempt in range(max_retries):
             try:
-                contents = [f"Based on this reference image, {prompt}", reference_image] if reference_image else prompt
+                refs = reference_images or []
+                if refs:
+                    contents = [f"Based on these reference images, {prompt}"] + refs
+                else:
+                    contents = prompt
                 response = self.model.generate_content(contents=contents)
                 if hasattr(response, 'candidates') and response.candidates:
                     cand = response.candidates[0]
@@ -96,13 +102,13 @@ class EnhancedImageAgentV2:
                 if attempt < max_retries - 1:
                     time.sleep(3)
         print("❌ Failed to generate image after all retries")
-        if reference_image is None:
+        if not (reference_images and len(reference_images) > 0):
             print("ℹ️ Tip: Provide a reference image; this model is optimized for image-to-image.")
         return None
 
-    def evaluate_image(self, image: Image.Image, original_prompt: str, iteration: int = 1, reference_image: Image.Image = None) -> dict:
+    def evaluate_image(self, image: Image.Image, original_prompt: str, iteration: int = 1, reference_images: Optional[List[Image.Image]] = None) -> dict:
         try:
-            if reference_image is not None:
+            if reference_images:
                 eval_prompt = f"""
                 You are an extremely strict visual QA evaluator. Assess the FIRST image (Generated) and compare it to the SECOND image (Reference) where applicable.
 
@@ -125,7 +131,7 @@ class EnhancedImageAgentV2:
                 SATISFACTION: X/10
                 NOTES: <one short sentence about any issues found>
                 """
-                contents = [eval_prompt, image, reference_image]
+                contents = [eval_prompt, image] + reference_images
             else:
                 eval_prompt = f"""
                 You are an extremely strict visual QA evaluator. Assess the image.
@@ -159,7 +165,7 @@ class EnhancedImageAgentV2:
             scores = {}
             for key in keys:
                 m = re.search(rf'{key}:\s*(\d+(?:\.\d+)?)', eval_text, re.IGNORECASE)
-                scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and reference_image is None else 5.0)
+                scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and not reference_images else 5.0)
 
             # Apply minimum thresholds
             min_thresholds = {
@@ -208,7 +214,7 @@ class EnhancedImageAgentV2:
         except Exception as e:
             print(f"⚠️ Evaluation error: {e}")
             return {
-                'face_fidelity': 10.0 if reference_image is None else 5.0,
+                'face_fidelity': 10.0 if not reference_images else 5.0,
                 'anatomy': 5.0,
                 'consistency': 5.0,
                 'accuracy': 5.0,
@@ -233,14 +239,19 @@ class EnhancedImageAgentV2:
         except Exception:
             return current_prompt
 
-    def run(self, goal: str, reference_image_path: str = None):
-        ref_img = None
-        if reference_image_path:
-            ref_img = load_image_as_pil(reference_image_path)
-            print(f"✅ Loaded image: {reference_image_path} ({ref_img.width}x{ref_img.height})")
+    def run(self, goal: str, reference_image_paths: Optional[List[str]] = None):
+        ref_imgs: List[Image.Image] = []
+        if reference_image_paths:
+            for pth in reference_image_paths:
+                try:
+                    img = load_image_as_pil(pth)
+                    ref_imgs.append(img)
+                    print(f"✅ Loaded image: {pth} ({img.width}x{img.height})")
+                except Exception as e:
+                    print(f"⚠️ Skipping reference '{pth}': {e}")
         print(f"🎯 Goal: {goal}")
-        if reference_image_path:
-            print(f"🖼️ Input image: {reference_image_path}")
+        if reference_image_paths:
+            print(f"🖼️ Input images: {', '.join(reference_image_paths)}")
         print()
         current_prompt = goal
         best_score = 0.0
@@ -250,14 +261,14 @@ class EnhancedImageAgentV2:
             print("="*50)
             print(f"📝 Current prompt: {current_prompt[:100]+('...' if len(current_prompt)>100 else '')}")
             print("🎨 Generating image...")
-            gen_img = self.generate_image(current_prompt, ref_img)
+            gen_img = self.generate_image(current_prompt, ref_imgs)
             if gen_img is None:
                 print("❌ Skipping iteration due to generation failure")
                 continue
             out_path = f"current/iteration_{i}_{self.session_id}.png"
             save_pil_image(gen_img, out_path)
             print("🔍 Evaluating image...")
-            scores = self.evaluate_image(gen_img, goal, i, ref_img)
+            scores = self.evaluate_image(gen_img, goal, i, ref_imgs)
             overall = scores.get('overall', 5.0)
             print(
                 "📊 Scores - Face: {face}/10, Anatomy: {anat}/10, Consistency: {cons}/10, Accuracy: {acc}/10, Quality: {qual}/10, Satisfaction: {sat}/10".format(
@@ -284,7 +295,8 @@ class EnhancedImageAgentV2:
                 best_score = overall
                 best_iter = i
                 print(f"⭐ New best score! (Iteration {i})")
-            if overall >= self.target_score and acc_ok and qual_ok and sat_ok:
+            # Early stop only if not forced to run exact count
+            if (overall >= self.target_score and acc_ok and qual_ok and sat_ok) and not self.run_exact:
                 print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10 (All minimums met)")
                 break
             elif overall >= self.target_score:
@@ -304,13 +316,30 @@ class EnhancedImageAgentV2:
 def main():
     p = argparse.ArgumentParser(description='Enhanced Image Agent v2.0 (Standalone)')
     p.add_argument('goal', help='Desired transformation or generation goal')
-    p.add_argument('image', nargs='?', help='Path to reference image (optional)')
-    p.add_argument('--iterations', '-n', type=int, default=6,
-                   help='Number of iterations: 1 for single-pass, >1 for smart iteration (default: 6)')
+    p.add_argument('image', nargs='?', help='Path to reference image (optional, single)')
+    p.add_argument('--refs', '-r', nargs='+', help='One or more paths to reference images (multi-image conditioning)')
+    p.add_argument('--iterations', '-n', type=int, default=None,
+                   help='Specify exact iterations (1-10). If omitted, runs smart up to 6 with early stop.')
+    p.add_argument('--exact', action='store_true', help='Force running exactly N iterations even if target is met')
     args = p.parse_args()
-    max_iters = max(1, int(args.iterations))
-    agent = EnhancedImageAgentV2(max_iterations=max_iters)
-    agent.run(args.goal, args.image)
+
+    # Determine iteration behavior
+    if args.iterations is None:
+        max_iters = 6  # smart default
+        run_exact = False  # allow early stop on success
+    else:
+        max_iters = max(1, min(10, int(args.iterations)))
+        run_exact = True if args.exact else True  # exact when user specifies N
+
+    # Resolve reference images
+    ref_paths: Optional[List[str]] = None
+    if args.refs:
+        ref_paths = args.refs
+    elif args.image:
+        ref_paths = [args.image]
+
+    agent = EnhancedImageAgentV2(max_iterations=max_iters, run_exact=run_exact)
+    agent.run(args.goal, ref_paths)
 
 if __name__ == '__main__':
     main()
