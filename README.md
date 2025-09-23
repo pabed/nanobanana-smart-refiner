@@ -86,6 +86,29 @@ python enhanced_agent_v2.py "golden retriever wearing red bandana" --refs ./dog1
 ```
 
 When multiple references are provided, the generator conditions on all of them and the evaluator compares the output against the set.
+
+## Prompt Helper: Multi‑Image Roles
+
+When using multiple references, map roles to the order of your images and be explicit in the prompt.
+
+### Pattern
+- Person A = first reference image (preserve identity: face, hair, overall look)
+- Person B = second reference image (preserve identity)
+- Describe the action, composition, camera hints, and constraints (anatomy, no duplicates).
+
+### Template
+Two dancers performing together in a bright dance studio with a wooden floor. Person A = first reference image (preserve identity: face, hair, general look). Person B = second reference image (preserve identity). Choreography: Person A dances with Person B; Person B is spinning on her feet (pirouette), mid‑turn with arms poised. Show both full body with clear view of feet, natural lighting, sharp focus, balanced exposure. Keep key outfit cues from each reference. Maintain facial fidelity and natural proportions. No extra or merged limbs; five fingers per visible hand; no duplicated body parts; realistic anatomy throughout.
+
+### Run Examples
+```bash
+# Smart default (up to 6, early stop)
+python enhanced_agent_v2.py "Two dancers performing together in a bright dance studio with a wooden floor. Person A = first reference image (preserve identity: face, hair, general look). Person B = second reference image (preserve identity). Choreography: Person A dances with Person B; Person B is spinning on her feet (pirouette), mid‑turn with arms poised. Show both full body with clear view of feet, natural lighting, sharp focus, balanced exposure. Keep key outfit cues from each reference. Maintain facial fidelity and natural proportions. No extra or merged limbs; five fingers per visible hand; no duplicated body parts; realistic anatomy throughout." \
+  --refs image1.jpg image2.jpg
+
+# Exact 4 images (prints scores for 1..4)
+python enhanced_agent_v2.py "Two dancers performing together in a bright dance studio with a wooden floor. Person A = first reference image (preserve identity: face, hair, general look). Person B = second reference image (preserve identity). Choreography: Person A dances with Person B; Person B is spinning on her feet (pirouette), mid‑turn with arms poised. Show both full body with clear view of feet, natural lighting, sharp focus, balanced exposure. Keep key outfit cues from each reference. Maintain facial fidelity and natural proportions. No extra or merged limbs; five fingers per visible hand; no duplicated body parts; realistic anatomy throughout." \
+  --refs image1.jpg image2.jpg --iterations 4
+```
 # Exact iteration control: passing --iterations N runs exactly N rounds (1–10),
 # saving N images and printing per‑iteration metric scores, even if the first meets all minimums.
 python enhanced_agent_v2.py "shiny chrome banana" /path/to/BANANA.png --iterations 4
