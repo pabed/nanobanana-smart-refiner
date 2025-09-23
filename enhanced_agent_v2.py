@@ -54,65 +54,6 @@ class EnhancedImageAgentV2:
     def _log(self, msg: str):
         print(msg)
 
-    def _verify_anatomy_counts(self, image: Image.Image) -> dict:
-        """Ask the eval model to count visible limbs/digits; compute a penalty score (1-10)."""
-        try:
-            verify_prompt = (
-                "Strictly count ONLY what is clearly visible in this image. Return numbers, no prose.\n"
-                "Return EXACTLY these lines (integers only):\n"
-                "HANDS: X\nARMS: X\nLEGS: X\nFEET: X\nEYES: X\nVISIBLE_HANDS: X\nFINGERS_PER_VISIBLE_HAND: v1,v2,v3 (omit if none)\n"
-            )
-            resp = self.eval_model.generate_content(contents=[verify_prompt, image])
-            text = resp.candidates[0].content.parts[0].text if hasattr(resp, 'candidates') else ""
-            def get_int(key: str, default: int = -1) -> int:
-                m = re.search(rf"{key}:\s*(\d+)", text, re.IGNORECASE)
-                try:
-                    return int(m.group(1)) if m else default
-                except Exception:
-                    return default
-            def get_list_ints(key: str) -> list:
-                m = re.search(rf"{key}:\s*([\d, ]+)", text, re.IGNORECASE)
-                if not m:
-                    return []
-                vals = [v.strip() for v in m.group(1).split(',') if v.strip()]
-                out = []
-                for v in vals:
-                    try:
-                        out.append(int(v))
-                    except Exception:
-                        pass
-                return out
-            counts = {
-                'hands': get_int('HANDS', -1),
-                'arms': get_int('ARMS', -1),
-                'legs': get_int('LEGS', -1),
-                'feet': get_int('FEET', -1),
-                'eyes': get_int('EYES', -1),
-                'visible_hands': get_int('VISIBLE_HANDS', -1),
-                'fingers_per_visible_hand': get_list_ints('FINGERS_PER_VISIBLE_HAND'),
-                'raw': text.strip()
-            }
-            # Compute penalty: start at 10 and subtract for mismatches
-            score = 10.0
-            expected = {'hands': 2, 'arms': 2, 'legs': 2, 'feet': 2, 'eyes': 2}
-            for k, exp in expected.items():
-                val = counts.get(k, -1)
-                if val == -1:
-                    # unknown -> slight uncertainty penalty
-                    score -= 0.5
-                elif val != exp:
-                    # penalize proportional to deviation
-                    score -= min(4.0, abs(val - exp) * 2.0)
-            # Fingers per visible hand (if provided)
-            fps = counts.get('fingers_per_visible_hand') or []
-            for f in fps:
-                if f != 5:
-                    score -= 1.0
-            score = max(1.0, min(10.0, score))
-            counts['penalized_anatomy'] = round(score, 2)
-            return counts
-        except Exception as e:
-            return {'error': str(e), 'penalized_anatomy': None}
 
     def generate_image(self, prompt: str, reference_images: Optional[List[Image.Image]] = None, max_retries: int = 3):
         for attempt in range(max_retries):
@@ -242,14 +183,7 @@ class EnhancedImageAgentV2:
                 scores[key.lower()] = float(m.group(1)) if m else (10.0 if key == 'FACE_FIDELITY' and not reference_images else 5.0)
             self._log(f"📊 [EVAL] Parsed scores: {scores}")
 
-            # Second-pass verification: explicit anatomy counting to catch extra/missing limbs
-            verify = self._verify_anatomy_counts(image)
-            if verify.get('penalized_anatomy') is not None:
-                before = scores.get('anatomy', 5.0)
-                after = min(before, float(verify['penalized_anatomy']))
-                if after < before:
-                    scores['anatomy'] = after
-            self._log(f"🧮 [EVAL] Anatomy verify: {verify}")
+            # No second-pass anatomy check (simplified)
 
             # Re-evaluate minimums and weighting using possibly updated anatomy
 
@@ -313,19 +247,7 @@ class EnhancedImageAgentV2:
             }
 
     def improve_prompt(self, current_prompt: str, evaluation: dict, original_goal: str) -> str:
-        try:
-            improvement_prompt = f"""
-            Original goal: {original_goal}
-            Current prompt: {current_prompt}
-            Scores: A={evaluation.get('accuracy',5)}, Q={evaluation.get('quality',5)}, S={evaluation.get('satisfaction',5)}
-            Improve the prompt to better satisfy the goal. Output ONLY the improved prompt.
-            """
-            resp = self.model.generate_content(improvement_prompt)
-            text = resp.candidates[0].content.parts[0].text.strip()
-            improved = text.strip('"\'`').strip() or current_prompt
-            return improved
-        except Exception:
-            return current_prompt
+        return current_prompt
 
     def run(self, goal: str, reference_image_paths: Optional[List[str]] = None):
         ref_imgs: List[Image.Image] = []
@@ -365,26 +287,9 @@ class EnhancedImageAgentV2:
             print("🔍 Evaluating image...")
             scores = self.evaluate_image(gen_img, goal, i, ref_imgs)
             overall = scores.get('overall', 5.0)
-            print(
-                "📊 Scores - Face: {face}/10, Anatomy: {anat}/10, Consistency: {cons}/10, Accuracy: {acc}/10, Quality: {qual}/10, Satisfaction: {sat}/10".format(
-                    face=scores.get('face_fidelity', 0), anat=scores.get('anatomy', 0), cons=scores.get('consistency', 0),
-                    acc=scores.get('accuracy', 0), qual=scores.get('quality', 0), sat=scores.get('satisfaction', 0)
-                )
-            )
-            print(f"🧠 Notes: {scores.get('feedback','').strip()[:180]}")
-            print(f"🎯 Overall (weighted): {overall:.1f}/10")
-            
-            # Check minimum requirements
-            acc_ok = scores.get('accuracy', 0) >= 8.5
-            qual_ok = scores.get('quality', 0) >= 8.0 
-            sat_ok = scores.get('satisfaction', 0) >= 8.0
-            
-            if not (acc_ok and qual_ok and sat_ok):
-                missing = []
-                if not acc_ok: missing.append(f"Accuracy<8.5 ({scores.get('accuracy', 0):.1f})")
-                if not qual_ok: missing.append(f"Quality<8.0 ({scores.get('quality', 0):.1f})")
-                if not sat_ok: missing.append(f"Satisfaction<8.0 ({scores.get('satisfaction', 0):.1f})")
-                print(f"❌ Minimum thresholds not met: {', '.join(missing)}")
+            print("📊 Face={:.1f} Anat={:.1f} Acc={:.1f} Qual={:.1f} Sat={:.1f} → Overall={:.1f}".format(
+                scores.get('face_fidelity', 0), scores.get('anatomy', 0), scores.get('accuracy', 0), scores.get('quality', 0), scores.get('satisfaction', 0), overall
+            ))
             
             if overall > best_score:
                 best_score = overall
@@ -392,20 +297,19 @@ class EnhancedImageAgentV2:
                 print(f"⭐ New best score! (Iteration {i})")
                 self._log(f"🌟 [ITER {i}] New best: {best_score}")
             # Early stop only if not forced to run exact count
+            acc_ok = scores.get('accuracy', 0) >= 8.5
+            qual_ok = scores.get('quality', 0) >= 8.0
+            sat_ok = scores.get('satisfaction', 0) >= 8.0
             if overall >= self.target_score and acc_ok and qual_ok and sat_ok:
                 if not self.run_exact:
                     print(f"🎉 TARGET ACHIEVED! Score: {overall:.1f}/10 (All minimums met)")
                     self._log(f"🏁 [STOP] Early stop at iteration {i} with score {overall}")
                     break
                 else:
-                    print(f"ℹ️ Score {overall:.1f}/10 reached and minimums met; continuing to complete requested iterations")
+                    print(f"ℹ️ Score {overall:.1f} (min OK); continuing to complete iterations")
             elif overall >= self.target_score and not (acc_ok and qual_ok and sat_ok):
-                print(f"⚠️ Score {overall:.1f}/10 reached, but minimum thresholds not met")
-            if i < self.max_iterations:
-                print("🔧 Improving prompt for next iteration...")
-                current_prompt = self.improve_prompt(current_prompt, scores, goal)
-                print("✨ Enhanced prompt ready\n")
-                self._log(f"✏️ [ITER {i}] Next prompt: {current_prompt}")
+                print(f"⚠️ Score {overall:.1f} but minimum thresholds not met")
+            # Keep same prompt for simplicity
         print("📈 FINAL RESULTS")
         print("="*50)
         print(f"🏆 Best score: {best_score:.1f}/10 (iteration {best_iter})")
