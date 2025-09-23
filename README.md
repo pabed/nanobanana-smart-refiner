@@ -12,12 +12,9 @@
 
 ## Demo
 
-<video width="800" controls>
-  <source src="./demo_video.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+https://github.com/pabed/nanobanana-smart-refiner/assets/demo_video.mp4
 
-*Watch the nanobanana-smart-refiner in action: transforming vintage poses into dancing poses while preserving all other image characteristics with crystal-clear text readability*
+*Watch the nanobanana-smart-refiner in action: transforming vintage poses into dancing poses while preserving all other image characteristics with crystal-clear text readability (1920x1000, broadcast quality)*
 
 ## Quick Start
 
